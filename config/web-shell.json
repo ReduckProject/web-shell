@@ -1,0 +1,38 @@
+{
+  "server": {
+    "host": "127.0.0.1",
+    "port": 5959
+  },
+  "workspace": {
+    "root": "."
+  },
+  "directories": [
+    {
+      "id": "workspace",
+      "name": "Workspace",
+      "path": "."
+    }
+  ],
+  "shell": {
+    "id": "auto",
+    "name": "Default Shell",
+    "command": "auto",
+    "args": []
+  },
+  "sessions": {
+    "disconnectGraceMs": 2000,
+    "maxSessions": 12
+  },
+  "shortcuts": [
+    {
+      "id": "claude",
+      "name": "Claude Code",
+      "input": "claude\r"
+    },
+    {
+      "id": "codex",
+      "name": "Codex",
+      "input": "codex\r"
+    }
+  ]
+}

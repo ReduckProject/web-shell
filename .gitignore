@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.vite/
+.dev-logs/
+artifacts/
+.omc/
+*.log
+.env
+.env.*
+!/.env.example
