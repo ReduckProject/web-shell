@@ -15,6 +15,6 @@
     "typecheck": "npm run typecheck --workspaces"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=18"
   }
 }

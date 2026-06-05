@@ -9,6 +9,7 @@ export type ClientMessage =
 
 export type ServerMessage =
   | { type: "session.started"; sessionId: string; shell: string; cwd: string; clientTabId?: string }
+  | { type: "session.cwd"; sessionId: string; cwd: string }
   | { type: "terminal.output"; sessionId: string; data: string }
   | { type: "session.exited"; sessionId: string; exitCode: number; signal?: number }
   | { type: "error"; code: string; message: string; sessionId?: string }

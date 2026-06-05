@@ -49,11 +49,13 @@ type ShellTab = {
 type TerminalHandle = {
   terminal: Terminal;
   fitAddon: FitAddon;
+  element: HTMLDivElement;
   resizeObserver?: ResizeObserver;
 };
 
 type ServerMessage =
   | { type: "session.started"; sessionId: string; shell: string; cwd: string; clientTabId?: string }
+  | { type: "session.cwd"; sessionId: string; cwd: string }
   | { type: "terminal.output"; sessionId: string; data: string }
   | { type: "session.exited"; sessionId: string; exitCode: number; signal?: number }
   | { type: "error"; code: string; message: string; sessionId?: string }
@@ -65,6 +67,18 @@ const serverPort = window.location.port === "5173" ? "5959" : window.location.po
 const apiBase = `${window.location.protocol}//${window.location.hostname}:${serverPort}`;
 const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
 const wsUrl = `${wsProtocol}//${window.location.hostname}:${serverPort}/ws`;
+
+function isVisibleTerminal(element: HTMLElement): boolean {
+  return element.offsetWidth > 0 && element.offsetHeight > 0;
+}
+
+function fitVisibleTerminal(handle: TerminalHandle): void {
+  if (!isVisibleTerminal(handle.element)) {
+    return;
+  }
+
+  handle.fitAddon.fit();
+}
 
 export function App() {
   const socket = useRef<WebSocket | null>(null);
@@ -80,6 +94,7 @@ export function App() {
   const [selectedDirectoryId, setSelectedDirectoryId] = useState<string | null>(null);
   const [isAddingDirectory, setIsAddingDirectory] = useState(false);
   const [newDirectoryName, setNewDirectoryName] = useState("");
+  const [newDirectoryPath, setNewDirectoryPath] = useState("");
   const [directoryError, setDirectoryError] = useState<string | null>(null);
   const [activeSessions, setActiveSessions] = useState(0);
   const [connectionState, setConnectionState] = useState<ConnectionState>("connecting");
@@ -210,6 +225,13 @@ export function App() {
           }
           break;
         }
+        case "session.cwd": {
+          const tab = tabsRef.current.find((item) => item.sessionId === message.sessionId);
+          if (tab) {
+            updateTab(tab.id, { cwd: message.cwd });
+          }
+          break;
+        }
         case "session.exited": {
           const tab = tabsRef.current.find((item) => item.sessionId === message.sessionId);
           if (!tab) {
@@ -286,10 +308,23 @@ export function App() {
   useEffect(() => {
     const activeHandle = activeTabId ? terminals.current.get(activeTabId) : undefined;
     if (activeHandle) {
-      activeHandle.fitAddon.fit();
-      activeHandle.terminal.focus();
+      window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(() => {
+          fitVisibleTerminal(activeHandle);
+          const activeTab = tabsRef.current.find((tab) => tab.id === activeTabId);
+          if (activeTab?.sessionId) {
+            send({
+              type: "terminal.resize",
+              sessionId: activeTab.sessionId,
+              cols: activeHandle.terminal.cols,
+              rows: activeHandle.terminal.rows
+            });
+          }
+          activeHandle.terminal.focus();
+        });
+      });
     }
-  }, [activeTabId, tabs.length]);
+  }, [activeTabId, send, sidebarCollapsed, tabs.length]);
 
   const bindTerminalElement = useCallback(
     (tabId: string, node: HTMLDivElement | null) => {
@@ -344,6 +379,10 @@ export function App() {
       });
 
       const resizeObserver = new ResizeObserver(() => {
+        if (!isVisibleTerminal(node)) {
+          return;
+        }
+
         fitAddon.fit();
         const tab = tabsRef.current.find((item) => item.id === tabId);
         if (tab?.sessionId) {
@@ -357,7 +396,7 @@ export function App() {
       });
 
       resizeObserver.observe(node);
-      terminals.current.set(tabId, { terminal, fitAddon, resizeObserver });
+      terminals.current.set(tabId, { terminal, fitAddon, element: node, resizeObserver });
       startTabSession(tabId);
     },
     [send, startTabSession]
@@ -407,24 +446,24 @@ export function App() {
     createTab(directoryId);
   };
 
-  const addCurrentDirectory = async (event: FormEvent<HTMLFormElement>) => {
+  const addDirectory = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setDirectoryError(null);
 
-    if (!activeTab?.sessionId) {
-      setDirectoryError("No active terminal session.");
+    if (!newDirectoryPath.trim()) {
+      setDirectoryError("Path is required.");
       return;
     }
 
     try {
-      const response = await fetch(`${apiBase}/api/directories/current`, {
+      const response = await fetch(`${apiBase}/api/directories`, {
         method: "POST",
         headers: {
           "content-type": "application/json"
         },
         body: JSON.stringify({
           name: newDirectoryName,
-          sessionId: activeTab.sessionId
+          path: newDirectoryPath
         })
       });
 
@@ -435,15 +474,17 @@ export function App() {
 
       setConfig(body as AppConfig);
       setNewDirectoryName("");
+      setNewDirectoryPath("");
       setIsAddingDirectory(false);
     } catch (error) {
-      setDirectoryError(error instanceof Error ? error.message : "Failed to favorite current path.");
+      setDirectoryError(error instanceof Error ? error.message : "Failed to add path.");
     }
   };
 
   const openAddDirectoryForm = () => {
     setDirectoryError(null);
     setNewDirectoryName(activeTab?.cwd ?? config?.workspace.root ?? "");
+    setNewDirectoryPath(activeTab?.cwd ?? config?.workspace.root ?? "");
     setIsAddingDirectory(true);
   };
 
@@ -563,14 +604,19 @@ export function App() {
             <div className="directory-groups">
               <div className="add-path-block">
                 {isAddingDirectory ? (
-                  <form className="add-path-form" onSubmit={addCurrentDirectory}>
+                  <form className="add-path-form" onSubmit={addDirectory}>
                     <input
                       aria-label="Path name"
                       placeholder="Name"
                       value={newDirectoryName}
                       onChange={(event) => setNewDirectoryName(event.target.value)}
                     />
-                    <div className="current-path-preview">{activeTab?.cwd ?? config?.workspace.root ?? "No active path"}</div>
+                    <input
+                      aria-label="Path value"
+                      placeholder="Path"
+                      value={newDirectoryPath}
+                      onChange={(event) => setNewDirectoryPath(event.target.value)}
+                    />
                     {directoryError ? <div className="form-error">{directoryError}</div> : null}
                     <div className="form-actions">
                       <button type="submit">Favorite</button>

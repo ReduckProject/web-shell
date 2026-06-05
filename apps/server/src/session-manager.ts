@@ -10,6 +10,7 @@ type Session = {
   pty: IPty;
   socket: WebSocket;
   cwd: string;
+  outputBuffer: string;
   cleanupTimer?: NodeJS.Timeout;
 };
 
@@ -33,19 +34,22 @@ export class SessionManager {
 
     const cwd = this.resolveSessionCwd(directoryId);
     const id = `s_${randomUUID()}`;
-    const shell = pty.spawn(this.config.shell.command, this.config.shell.args, {
+    const shell = pty.spawn(this.config.shell.command, this.shellArgs(), {
       name: "xterm-256color",
       cols,
       rows,
       cwd,
-      env: process.env
+      env: this.shellEnv()
     });
 
-    const session: Session = { id, pty: shell, socket, cwd };
+    const session: Session = { id, pty: shell, socket, cwd, outputBuffer: "" };
     this.sessions.set(id, session);
 
     shell.onData((data) => {
-      this.send(socket, { type: "terminal.output", sessionId: id, data });
+      const filteredData = this.extractCwdUpdates(session, data);
+      if (filteredData) {
+        this.send(socket, { type: "terminal.output", sessionId: id, data: filteredData });
+      }
     });
 
     shell.onExit(({ exitCode, signal }) => {
@@ -60,7 +64,6 @@ export class SessionManager {
       cwd,
       clientTabId
     });
-
     return session;
   }
 
@@ -152,6 +155,74 @@ export class SessionManager {
     if (socket.readyState === socket.OPEN) {
       socket.send(JSON.stringify(message));
     }
+  }
+
+  private shellArgs(): string[] {
+    const shellCommand = this.config.shell.command.toLowerCase();
+
+    if (this.config.shell.id === "powershell" || shellCommand.includes("pwsh") || shellCommand.includes("powershell")) {
+      const args = [...this.config.shell.args];
+      if (!args.some((arg) => arg.toLowerCase() === "-noexit")) {
+        args.push("-NoExit");
+      }
+      args.push(
+        "-Command",
+        [
+          "function global:prompt {",
+          "$p=(Get-Location).Path;",
+          "[Console]::Write(\"$([char]27)]777;web-shell-cwd=$p$([char]7)\");",
+          "\"PS $p> \"",
+          "}"
+        ].join(" ")
+      );
+      return args;
+    }
+
+    return this.config.shell.args;
+  }
+
+  private shellEnv(): NodeJS.ProcessEnv {
+    const env = { ...process.env };
+    const shellCommand = this.config.shell.command.toLowerCase();
+
+    if (
+      this.config.shell.id !== "powershell" &&
+      !shellCommand.includes("pwsh") &&
+      !shellCommand.includes("powershell") &&
+      this.config.shell.id !== "cmd" &&
+      !shellCommand.endsWith("cmd.exe")
+    ) {
+      env.PROMPT_COMMAND = `printf "\\033]777;web-shell-cwd=%s\\007" "$PWD"${
+        env.PROMPT_COMMAND ? `;${env.PROMPT_COMMAND}` : ""
+      }`;
+    }
+
+    return env;
+  }
+
+  private extractCwdUpdates(session: Session, data: string): string {
+    session.outputBuffer += data;
+    const pattern = /\x1b\]777;web-shell-cwd=([^\x07]*)\x07/g;
+    let match: RegExpExecArray | null;
+
+    while ((match = pattern.exec(session.outputBuffer)) !== null) {
+      const nextCwd = match[1] ?? session.cwd;
+      if (nextCwd !== session.cwd) {
+        session.cwd = nextCwd;
+        this.send(session.socket, { type: "session.cwd", sessionId: session.id, cwd: nextCwd });
+      }
+    }
+
+    const filtered = session.outputBuffer.replace(pattern, "");
+    const lastEscape = filtered.lastIndexOf("\x1b]777;web-shell-cwd=");
+
+    if (lastEscape === -1 || filtered.includes("\x07", lastEscape)) {
+      session.outputBuffer = "";
+      return filtered;
+    }
+
+    session.outputBuffer = filtered.slice(lastEscape);
+    return filtered.slice(0, lastEscape);
   }
 
   private cdCommand(directoryPath: string): string {
